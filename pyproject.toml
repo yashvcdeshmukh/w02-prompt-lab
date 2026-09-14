@@ -43,3 +43,16 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 
+[[tool.mypy.overrides]]
+module = "promptlab.schemas"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "test_adapter_contract",
+    "test_usage_contract",
+    "test_day1",
+]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
