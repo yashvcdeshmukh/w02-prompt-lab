@@ -103,6 +103,23 @@ def test_same_ollama_adapter_class_can_target_both_models() -> None:
     assert mistral.model_id != qwen.model_id
 
 
+def test_ollama_adapter_can_disable_thinking(monkeypatch) -> None:
+    request_payload: dict[str, object] = {}
+
+    def fake_post(*args, **kwargs) -> FakeResponse:
+        request_payload.update(kwargs["json"])
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    adapter = OllamaAdapter(model_id=_model_id("qwen"), think=False)
+    result = adapter.complete(_request(), "thinking-disabled-run")
+
+    assert result.succeeded is True
+    assert request_payload["model"] == _model_id("qwen")
+    assert request_payload["think"] is False
+
+
 class FakeResponse:
     def __init__(
         self,
