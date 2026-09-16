@@ -37,6 +37,8 @@ class TriageOutput(StrictModel):
     human_review_required: Literal[True]
     customer_outcome: None = None
 
+class TriageOutputWithAnalysis(TriageOutput):
+    analysis: str
 
 class SummarizationOutput(StrictModel):
     document_status: DocumentStatus

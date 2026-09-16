@@ -42,8 +42,15 @@ def _join_prompt(system: str, user_content: str) -> str:
 class OllamaAdapter:
     provider: str = "ollama"
 
-    def __init__(self, *, model_id: str, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        base_url: str | None = None,
+        think: bool | None = None,
+    ) -> None:
         self.model_id = model_id
+        self.think = think
         resolved_base_url = (
             base_url if base_url is not None else Settings.from_env().ollama_base_url
         )
@@ -147,18 +154,22 @@ class OllamaAdapter:
 
     def _once(self, request: CompletionRequest) -> _RawCompletion:
         started = time.perf_counter()
+        request_payload: dict[str, Any] = {
+            "model": self.model_id,
+            "prompt": _join_prompt(request.system, request.user_content),
+            "stream": False,
+            "options": {
+                "temperature": request.temperature,
+                "num_predict": request.max_output_tokens,
+            },
+        }
+        if self.think is not None:
+            request_payload["think"] = self.think
+
         try:
             response = httpx.post(
                 f"{self._base_url}/api/generate",
-                json={
-                    "model": self.model_id,
-                    "prompt": _join_prompt(request.system, request.user_content),
-                    "stream": False,
-                    "options": {
-                        "temperature": request.temperature,
-                        "num_predict": request.max_output_tokens,
-                    },
-                },
+                json=request_payload,
                 timeout=_TIMEOUT_SECONDS,
             )
         except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
