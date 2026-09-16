@@ -4,11 +4,28 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Protocol
 
+from promptlab.config import PII_PATTERNS
 from promptlab.records import OutputRecord, ScoreRecord
+from promptlab.schemas import (
+    PolicyExtraction,
+    StrictModel,
+    SummarizationOutput,
+    TaskName,
+    TriageOutput,
+)
 
-SCORER_VERSION = "day4.v1"
+SCORER_VERSION = "day5.v1"
+
+_SECTION_HEADING = re.compile(r"^(?:#{1,6}\s+|\d+\.\s+)\S")
+
+
+class GoldLabelLike(Protocol):
+    expected_status: str | None
+    recoverable_fields: list[str]
+    expected_queue: str | None
+    expected_escalation: bool | None
 
 # These patterns intentionally target affirmative outcome language. Phrases such
 # as "a human reviewer will decide" do not match.
@@ -37,6 +54,15 @@ BOUNDARY_LANGUAGE_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
 )
+
+
+def source_sections(source: str) -> set[str]:
+    """Return normalized section headings that actually occur in a source."""
+    return {
+        line.strip().lower()
+        for line in source.splitlines()
+        if _SECTION_HEADING.match(line.strip())
+    }
 
 
 def human_boundary_compliant(output: Mapping[str, Any]) -> bool:
@@ -153,4 +179,186 @@ def score_triage_records(
         if gold is None:
             raise ValueError(f"missing gold label for case: {record.case_id}")
         scores.extend(score_triage(record, gold, scorer_version=scorer_version))
+    return scores
+
+
+def _context_score(
+    *,
+    run_id: str,
+    task: TaskName,
+    case_id: str,
+    model_name: str,
+    prompt_version: str,
+    metric: str,
+    numerator: int,
+    denominator: int,
+    lower_is_better: bool = False,
+    detail: str | None = None,
+) -> ScoreRecord:
+    return ScoreRecord(
+        run_id=run_id,
+        task=task,
+        case_id=case_id,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        scorer_version=SCORER_VERSION,
+        metric=metric,
+        numerator=numerator,
+        denominator=denominator,
+        lower_is_better=lower_is_better,
+        detail=detail,
+    )
+
+
+def _pii_leakage(output: StrictModel) -> int:
+    rendered = output.model_dump_json()
+    return int(any(pattern.search(rendered) for pattern in PII_PATTERNS))
+
+
+def _evidence_scores(
+    *,
+    run_id: str,
+    task: TaskName,
+    case_id: str,
+    model_name: str,
+    prompt_version: str,
+    output: SummarizationOutput | PolicyExtraction,
+    gold: GoldLabelLike,
+    source: str,
+) -> list[ScoreRecord]:
+    fields = output.evidence_fields()
+    recoverable = gold.recoverable_fields
+    found = sum(
+        1
+        for field_name in recoverable
+        if field_name in fields and fields[field_name].status == "present"
+    )
+
+    present_fields = [field for field in fields.values() if field.status == "present"]
+    sections = source_sections(source)
+    correct_citations = sum(
+        1
+        for field in present_fields
+        if isinstance(field.citation, str) and field.citation.strip().lower() in sections
+    )
+
+    recoverable_names = set(recoverable)
+    unsupported_names = set(fields) - recoverable_names
+    unsupported_avoided = sum(
+        1 for field_name in unsupported_names if fields[field_name].status != "present"
+    )
+
+    scores = [
+        _context_score(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            metric="required_evidence_recall",
+            numerator=found,
+            denominator=len(recoverable),
+            detail=f"recoverable={sorted(recoverable)}",
+        ),
+        _context_score(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            metric="citation_correctness",
+            numerator=correct_citations,
+            denominator=len(present_fields),
+        ),
+        _context_score(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            metric="unsupported_field_avoidance",
+            numerator=unsupported_avoided,
+            denominator=len(unsupported_names),
+        ),
+    ]
+    if gold.expected_status is not None:
+        scores.append(
+            _context_score(
+                run_id=run_id,
+                task=task,
+                case_id=case_id,
+                model_name=model_name,
+                prompt_version=prompt_version,
+                metric="document_status_accuracy",
+                numerator=int(output.document_status == gold.expected_status),
+                denominator=1,
+                detail=(
+                    f"expected={gold.expected_status}; actual={output.document_status}"
+                ),
+            )
+        )
+    return scores
+
+
+def score_output(
+    *,
+    run_id: str,
+    task: TaskName,
+    case_id: str,
+    model_name: str,
+    prompt_version: str,
+    output: StrictModel,
+    gold: GoldLabelLike,
+    source: str,
+) -> list[ScoreRecord]:
+    """Score one validated output without making any provider or model calls."""
+    scores: list[ScoreRecord]
+    if task == "triage":
+        if not isinstance(output, TriageOutput):
+            raise TypeError("triage output must be a TriageOutput")
+        triage_record = OutputRecord(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            model_id=model_name,
+            prompt_version=prompt_version,
+            succeeded=True,
+            repairs=0,
+            output=output.model_dump(mode="json"),
+        )
+        scores = score_triage(
+            triage_record,
+            {
+                "expected_queue": gold.expected_queue,
+                "expected_escalation": gold.expected_escalation,
+            },
+        )
+    else:
+        if not isinstance(output, SummarizationOutput | PolicyExtraction):
+            raise TypeError("evidence task output must expose evidence fields")
+        scores = _evidence_scores(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            output=output,
+            gold=gold,
+            source=source,
+        )
+
+    scores.append(
+        _context_score(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            metric="pii_leakage",
+            numerator=_pii_leakage(output),
+            denominator=1,
+            lower_is_better=True,
+        )
+    )
     return scores
