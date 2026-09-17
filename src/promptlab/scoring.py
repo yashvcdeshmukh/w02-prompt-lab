@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from promptlab.config import PII_PATTERNS
 from promptlab.records import OutputRecord, ScoreRecord
@@ -16,9 +16,10 @@ from promptlab.schemas import (
     TriageOutput,
 )
 
-SCORER_VERSION = "day5.v1"
+SCORER_VERSION = "day5.v2"
 
 _SECTION_HEADING = re.compile(r"^(?:#{1,6}\s+|\d+\.\s+)\S")
+ScoreAttemptKind = Literal["primary", "transport_retry", "repair", "repair_retry"]
 
 
 class GoldLabelLike(Protocol):
@@ -96,6 +97,9 @@ def _score(
         metric=metric,
         numerator=int(passed),
         denominator=1,
+        model_id=record.model_id,
+        prompt_id=record.prompt_id,
+        source_record_id=record.source_record_id,
         lower_is_better=lower_is_better,
         detail=detail,
     )
@@ -188,7 +192,12 @@ def _context_score(
     task: TaskName,
     case_id: str,
     model_name: str,
+    model_id: str,
+    prompt_id: str,
     prompt_version: str,
+    source_record_id: str,
+    attempt: int,
+    kind: ScoreAttemptKind,
     metric: str,
     numerator: int,
     denominator: int,
@@ -205,6 +214,11 @@ def _context_score(
         metric=metric,
         numerator=numerator,
         denominator=denominator,
+        model_id=model_id,
+        prompt_id=prompt_id,
+        source_record_id=source_record_id,
+        attempt=attempt,
+        kind=kind,
         lower_is_better=lower_is_better,
         detail=detail,
     )
@@ -221,7 +235,12 @@ def _evidence_scores(
     task: TaskName,
     case_id: str,
     model_name: str,
+    model_id: str,
+    prompt_id: str,
     prompt_version: str,
+    source_record_id: str,
+    attempt: int,
+    kind: ScoreAttemptKind,
     output: SummarizationOutput | PolicyExtraction,
     gold: GoldLabelLike,
     source: str,
@@ -254,7 +273,12 @@ def _evidence_scores(
             task=task,
             case_id=case_id,
             model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
             prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
             metric="required_evidence_recall",
             numerator=found,
             denominator=len(recoverable),
@@ -265,7 +289,28 @@ def _evidence_scores(
             task=task,
             case_id=case_id,
             model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
             prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
+            metric="missed_required_evidence",
+            numerator=len(recoverable) - found,
+            denominator=len(recoverable),
+            lower_is_better=True,
+        ),
+        _context_score(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
             metric="citation_correctness",
             numerator=correct_citations,
             denominator=len(present_fields),
@@ -275,10 +320,31 @@ def _evidence_scores(
             task=task,
             case_id=case_id,
             model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
             prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
             metric="unsupported_field_avoidance",
             numerator=unsupported_avoided,
             denominator=len(unsupported_names),
+        ),
+        _context_score(
+            run_id=run_id,
+            task=task,
+            case_id=case_id,
+            model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
+            metric="invented_unsupported_evidence",
+            numerator=len(unsupported_names) - unsupported_avoided,
+            denominator=len(unsupported_names),
+            lower_is_better=True,
         ),
     ]
     if gold.expected_status is not None:
@@ -288,7 +354,12 @@ def _evidence_scores(
                 task=task,
                 case_id=case_id,
                 model_name=model_name,
+                model_id=model_id,
+                prompt_id=prompt_id,
                 prompt_version=prompt_version,
+                source_record_id=source_record_id,
+                attempt=attempt,
+                kind=kind,
                 metric="document_status_accuracy",
                 numerator=int(output.document_status == gold.expected_status),
                 denominator=1,
@@ -306,7 +377,12 @@ def score_output(
     task: TaskName,
     case_id: str,
     model_name: str,
+    model_id: str,
+    prompt_id: str,
     prompt_version: str,
+    source_record_id: str,
+    attempt: int,
+    kind: ScoreAttemptKind,
     output: StrictModel,
     gold: GoldLabelLike,
     source: str,
@@ -321,11 +397,13 @@ def score_output(
             task=task,
             case_id=case_id,
             model_name=model_name,
-            model_id=model_name,
+            model_id=model_id,
             prompt_version=prompt_version,
             succeeded=True,
             repairs=0,
             output=output.model_dump(mode="json"),
+            prompt_id=prompt_id,
+            source_record_id=source_record_id,
         )
         scores = score_triage(
             triage_record,
@@ -334,6 +412,10 @@ def score_output(
                 "expected_escalation": gold.expected_escalation,
             },
         )
+        scores = [
+            score.model_copy(update={"attempt": attempt, "kind": kind})
+            for score in scores
+        ]
     else:
         if not isinstance(output, SummarizationOutput | PolicyExtraction):
             raise TypeError("evidence task output must expose evidence fields")
@@ -342,7 +424,12 @@ def score_output(
             task=task,
             case_id=case_id,
             model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
             prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
             output=output,
             gold=gold,
             source=source,
@@ -354,7 +441,12 @@ def score_output(
             task=task,
             case_id=case_id,
             model_name=model_name,
+            model_id=model_id,
+            prompt_id=prompt_id,
             prompt_version=prompt_version,
+            source_record_id=source_record_id,
+            attempt=attempt,
+            kind=kind,
             metric="pii_leakage",
             numerator=_pii_leakage(output),
             denominator=1,

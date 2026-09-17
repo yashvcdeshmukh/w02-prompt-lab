@@ -151,7 +151,12 @@ def test_required_evidence_and_citations_use_gold_and_source_headings() -> None:
         task="extraction",
         case_id="E01",
         model_name="qwen",
+        model_id="qwen3:8b",
+        prompt_id="extract",
         prompt_version="v3",
+        source_record_id="record-1",
+        attempt=1,
+        kind="primary",
         output=output,
         gold=Gold(
             expected_status="valid",
@@ -172,8 +177,11 @@ def test_required_evidence_and_citations_use_gold_and_source_headings() -> None:
     }
     assert by_metric["required_evidence_recall"].numerator == 3
     assert by_metric["required_evidence_recall"].denominator == 4
+    assert by_metric["missed_required_evidence"].numerator == 1
+    assert by_metric["missed_required_evidence"].denominator == 4
     assert by_metric["citation_correctness"].numerator == 2
     assert by_metric["citation_correctness"].denominator == 3
+    assert by_metric["invented_unsupported_evidence"].numerator == 0
 
 
 def test_pii_leakage_uses_all_supplied_patterns() -> None:
@@ -199,7 +207,12 @@ def test_pii_leakage_uses_all_supplied_patterns() -> None:
             task="triage",
             case_id="T01",
             model_name="qwen",
+            model_id="qwen3:8b",
+            prompt_id="triage",
             prompt_version="v1",
+            source_record_id="record-1",
+            attempt=1,
+            kind="primary",
             output=output,
             gold=Gold(
                 expected_queue="fraud_report",
