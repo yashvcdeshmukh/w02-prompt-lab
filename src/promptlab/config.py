@@ -22,6 +22,7 @@ PII_PATTERNS: tuple[re.Pattern[str], ...] = (
 class ModelConfig:
     logical_name: str
     model_id: str
+    think: bool | None = None
     input_usd_per_million: Decimal = Decimal("0")
     output_usd_per_million: Decimal = Decimal("0")
 
@@ -54,7 +55,11 @@ class Settings:
             ).rstrip("/"),
             models={
                 "mistral": ModelConfig(logical_name="mistral", model_id=model_a),
-                "qwen": ModelConfig(logical_name="qwen", model_id=model_b),
+                "qwen": ModelConfig(
+                    logical_name="qwen",
+                    model_id=model_b,
+                    think=True,
+                ),
             },
             temperature=float(os.getenv("TEMPERATURE", "0.0")),
             max_retries=int(os.getenv("MAX_RETRIES", "2")),
