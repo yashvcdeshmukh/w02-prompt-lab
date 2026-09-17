@@ -28,6 +28,8 @@ class UsageRecord(Record):
     completion_tokens: int
     latency_ms: float
     cost_usd: Decimal
+    record_id: str | None = None
+    prompt_id: str | None = None
     error: str | None = None
 
 
@@ -41,6 +43,9 @@ class OutputRecord(Record):
     succeeded: bool
     repairs: int
     output: dict[str, Any] | None
+    prompt_id: str | None = None
+    source_record_id: str | None = None
+    case_latency_ms: float | None = None
     error: str | None = None
 
 
@@ -54,6 +59,11 @@ class ScoreRecord(Record):
     metric: str
     numerator: int
     denominator: int
+    model_id: str | None = None
+    prompt_id: str | None = None
+    source_record_id: str | None = None
+    attempt: int | None = None
+    kind: Literal["primary", "transport_retry", "repair", "repair_retry"] | None = None
     lower_is_better: bool = False
     detail: str | None = None
 
